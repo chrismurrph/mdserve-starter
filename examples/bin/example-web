@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# A stand-in dev server for the example projects: serves the current directory
+# on the port given (default 8701). Long-running, so it is a SERVICE.
+set -euo pipefail
+port="${1:-8701}"
+echo "serving $(pwd) on http://localhost:$port"
+exec python3 -u -m http.server "$port" --bind 127.0.0.1

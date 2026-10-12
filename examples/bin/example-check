@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# A stand-in check for the example projects: prints a few coloured lines over a
+# few seconds, then exits. Runs to an exit code, so it is a ONE-SHOT.
+# Pass "fail" to see what a failing run looks like.
+set -uo pipefail
+green=$'\e[32m'; red=$'\e[31m'; bold=$'\e[1m'; off=$'\e[0m'
+echo "${bold}checking $(basename "$(pwd)")${off}"
+for f in *; do
+  sleep 0.5
+  echo "  ${green}ok${off}  $f"
+done
+if [ "${1:-}" = "fail" ]; then
+  echo "${red}1 problem found${off}"
+  exit 1
+fi
+echo "${green}all good${off}"
