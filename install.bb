@@ -131,7 +131,7 @@
 (println "mdserve setup — writes" config-file)
 (println)
 
-(when-not (on-path? "bb")
+(when-not (or (on-path? "bb") (.canExecute (io/file home ".local/bin/bb")))
   (println "Note: babashka (bb) is not on PATH, and mdserve.sh needs it there."))
 
 (def browser

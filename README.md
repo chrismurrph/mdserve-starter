@@ -24,7 +24,8 @@ runs one `curl`, and the doc is in front of you, rendered, in the right window.
 
 - Linux with a desktop. It is untested on macOS; there, the browser path and
   the terminal command would be the parts to change.
-- [babashka](https://github.com/babashka/babashka#installation) (`bb`) on PATH.
+- [babashka](https://babashka.org) (`bb`). `install.sh` installs it for you if
+  it's missing (into `~/.local/bin`, no sudo).
 - Google Chrome or Chromium. mdserve runs it with its own profile, so your
   normal browser is untouched.
 - `lsof`, so that ■ Stop can also end a server that was started from a terminal.
@@ -35,7 +36,7 @@ runs one `curl`, and the doc is in front of you, rendered, in the right window.
 ```bash
 git clone https://github.com/chrismurrph/mdserve-starter ~/code/mdserve
 cd ~/code/mdserve
-bb install.bb
+./install.sh
 ```
 
 The installer asks for a port, your projects and their workspaces, then writes
