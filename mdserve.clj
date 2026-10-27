@@ -12,7 +12,7 @@
 ;; pages have a manual ↻ Refresh, and dashboards an opt-in auto-refresh.
 ;;
 ;; Editing this file? Read AGENTS.md first.
-(babashka.deps/add-deps '{:deps {markdown-clj/markdown-clj {:mvn/version "1.12.1"}}})
+(babashka.deps/add-deps '{:deps {markdown-clj/markdown-clj {:mvn/version "1.12.10"}}})
 
 (require '[org.httpkit.server :as srv]
          '[markdown.core :as md]
@@ -98,6 +98,17 @@
   "The workspace the panel window lives on, or nil. Only used to answer ?ws=<n>
    for the panel's own number without a warning."
   (:panel-workspace config))
+
+(defn workspace-project
+  "The :dir of the project whose window is workspace n, or nil (the panel's
+   workspace, or one with no project)."
+  [n]
+  (some #(when (= n (:workspace %)) (:dir %)) projects))
+
+(defn config-workspaces
+  "Every workspace config.edn names, the panel's and each project's, in order."
+  []
+  (sort (distinct (remove nil? (cons panel-workspace (map :workspace projects))))))
 
 (def port (or (some-> (System/getenv "MDSERVE_PORT") parse-long)
               (:port config)
@@ -222,8 +233,8 @@
              ".cmd-note{font-size:.7em;font-weight:400;color:var(--fg-soft);margin-left:.6em}"
              ".cmd-auto{font-size:.85em;color:var(--fg-soft);margin-left:1em;user-select:none}"
              ".cmd-busy{cursor:progress}.cmd-busy .pact{pointer-events:none;opacity:.4}.dot.dot-busy{color:var(--fg-soft)}"
-             ".remember-tabs{font:inherit;font-size:13px;cursor:pointer;border:1px solid var(--line);background:var(--pre-bg);color:var(--fg);border-radius:8px;padding:6px 12px}"
-             ".remember-tabs:hover{opacity:.85}.remember-tabs:disabled{cursor:default}"]))
+             ".remember-tabs,.tablet-btn{font:inherit;font-size:13px;cursor:pointer;border:1px solid var(--line);background:var(--pre-bg);color:var(--fg);border-radius:8px;padding:6px 12px}"
+             ".remember-tabs:hover,.tablet-btn:hover{opacity:.85}.remember-tabs:disabled,.tablet-btn:disabled{cursor:default}"]))
 
 (defn escape-html [s]
   (-> (str s)
@@ -762,9 +773,11 @@
 (def tab-order
   "Replay order, left to right: the panel, the blue command dashboard, the
    browsed listing, then logs, plain docs, tmp, archive, and anything external
-   last. :nav sits right after the dashboard on purpose — in a project window
-   that puts the green Explorer second, always in the same place."
-  [:panel :dev :nav :log :doc :tmp :archive :external])
+   last. A workspace's Sessions tab (:sessions) comes straight after the
+   dashboard, or after the panel in the panel's window. :nav sits right after
+   them on purpose — in a project window that puts the green Explorer in the
+   same place every time."
+  [:panel :dev :sessions :nav :log :doc :tmp :archive :external])
 
 (defn- tab-category
   "Which tab-order bucket a remembered tab falls in. Uses the same path-dot
@@ -775,6 +788,7 @@
     (cond
       (nil? path)                           :external
       (= "/" route)                         :panel
+      (re-matches #"/sessions/\d+" route)  :sessions
       (re-find #"^/commands/[^/]+/log/" route) :log
       (re-find #"^/commands/" route)        :dev
       :else (or (some-> (tab-fs-path t) path-dot)
@@ -812,12 +826,14 @@
   "Which project root a tab belongs to, or nil when it belongs to none — the
    panel, a listing outside every project, an external site. NOT the question
    tab-category answers: that buckets by dot, so a project's dashboard and one
-   of its docs share a project but not a category. Two signals:
+   of its docs share a project but not a category. Three signals:
+     0. a Sessions tab             /sessions/<n>: the project whose :workspace is n
      1. the mdserve route          /commands/<name> and its /log/ pages
      2. the path a /view tab shows (file-project)"
   [{:keys [path] :as t}]
   (let [route (str/replace (or path "") #"\?.*$" "")]
-    (or (some-> (re-find #"^/commands/([^/]+)" route) second
+    (or (some-> (re-matches #"/sessions/(\d+)" route) second parse-long workspace-project)
+        (some-> (re-find #"^/commands/([^/]+)" route) second
                 (URLDecoder/decode "UTF-8") project-by-name :dir)
         (some-> (tab-fs-path t) file-project))))
 
@@ -961,23 +977,19 @@
   #"\|(?:\s*:?-+:?\s*\|)+\s*")
 
 (defn- indented-table-line?
-  "A line indented 1-3 spaces whose content starts with |. Exactly the lines
-   markdown-clj refuses to see as a table: at column 0 it parses them fine, and
-   4+ spaces is an indented code block which must stay one."
+  "A line indented 1-3 spaces whose content starts with |: a table row inside a
+   list item. 4+ spaces is an indented code block, not a table."
   [line]
   (some? (re-matches #" {1,3}\|.*" line)))
 
 (defn dedent-indented-tables
-  "Markdown PRE-processor: shift GitHub tables that sit indented inside a list
-   item back to column 0 so markdown-clj recognises them. markdown-clj 1.12.1
-   only parses a table whose rows start at column 0 — even ONE leading space
-   degrades it to a paragraph of literal pipes (the list context is irrelevant;
-   plain indentation alone breaks it). We can't preserve the nesting anyway:
-   markdown-clj closes a <ul> at the first non-item line, so column 0 renders
-   the same as any in-list placement could. Scope is deliberately tight — a run
-   of consecutive 1-3-space-indented |-lines whose second line is a |---|---|
-   separator, outside any ``` / ~~~ fence. 4-space-indented code blocks and
-   pipe-ish prose are untouched."
+  "Shift GitHub tables that sit indented inside a list item back to column 0,
+   for the table lint only, which looks for rows at column 0. Rendering no longer
+   needs it: markdown-clj 1.12.10 parses indented tables itself (1.12.1 turned
+   them into a paragraph of pipes, and this used to run before every render).
+   Scope is deliberately tight — a run of consecutive 1-3-space-indented
+   |-lines whose second line is a |---|---| separator, outside any ``` / ~~~
+   fence. 4-space-indented code blocks and pipe-ish prose are untouched."
   [body]
   (let [lines (str/split-lines body)
         n     (count lines)]
@@ -1126,7 +1138,7 @@
 
 (defn join-wrapped-emphasis
   "Markdown PRE-processor: un-wrap emphasis spans that straddle a source
-   newline. markdown-clj 1.12.1's emphasis pass is line-scoped, so hard-wrapped
+   newline. markdown-clj 1.12.10's emphasis pass is line-scoped, so hard-wrapped
    prose like *\"...call\\nsites...\"* renders its asterisks literally even
    though it is perfectly valid GitHub markdown. Here any *...* / **...** pair
    whose markers sit on different lines has the newline(s) between them (and
@@ -1215,7 +1227,7 @@
 
 (defn join-wrapped-code-spans
   "Markdown PRE-processor: un-wrap inline code spans that straddle a source
-   newline. markdown-clj 1.12.1's inline-code pass is line-scoped, so a
+   newline. markdown-clj 1.12.10's inline-code pass is line-scoped, so a
    hard-wrapped `...` span never closes — worse, the orphaned backtick
    MIS-PAIRS with the next backtick in the paragraph and steals the following
    code span. Here any paired backtick run whose closer sits on a later line
@@ -1344,7 +1356,7 @@
 (defn extract-quoted-fences
   "Markdown PRE-processor, first half of the quoted-fence fix. Returns
    [body' fences] where every fenced code block nested in a blockquote —
-   which markdown-clj 1.12.1 renders as mangled quote prose — has been
+   which markdown-clj 1.12.10 renders as mangled quote prose — has been
    replaced by a single quote-prefixed placeholder line, and fences maps each
    placeholder token to {:info \"bash\" :content \"...\"} for the post-parse
    splice. CommonMark rules: the opener is a quote line whose content is
@@ -1530,7 +1542,7 @@
   "Scan markdown BODY (post-dedent, i.e. as the parser will see it; line
    numbers are unchanged by dedenting) for GitHub-table problems. Returns
    {:structural [..] :legibility [..]} — both empty for a healthy document.
-   Structural issues LOSE content in markdown-clj 1.12.1: :blank-split (a
+   Structural issues LOSE content in markdown-clj 1.12.10: :blank-split (a
    blank line inside a table detaches the trailing rows, which render as an
    EMPTY table), :no-separator (2+ pipe rows with no |---| line — also an
    empty table), :cell-count (a row WIDER than its header silently drops the
@@ -1753,12 +1765,10 @@
 
    Always, in the RENDER path only: quote-internal spans join first
    (join-wrapped-in-quotes touches only blockquote runs, which the other two
-   passes deliberately leave alone), then code spans, then emphasis;
-   dedent-indented-tables last, so its trailing-newline guarantee is the last
-   thing the parser sees.
+   passes deliberately leave alone), then code spans, then emphasis.
 
    fences?: fenced code blocks nested in blockquotes — which markdown-clj
-   1.12.1 renders as mangled quote prose — are extracted to placeholder lines
+   1.12.10 renders as mangled quote prose — are extracted to placeholder lines
    before parsing and their <pre><code> HTML spliced over the placeholders
    afterwards (extract-quoted-fences / splice-quoted-fences), so a quoted
    ```diff block reaches colorize-diff like an unquoted one.
@@ -1773,7 +1783,7 @@
   (let [[body* fences] (if fences? (extract-quoted-fences body) [body {}])
         joined        (join-wrapped-emphasis (join-wrapped-code-spans (join-wrapped-in-quotes body*)))
         [masked tok]  (if backslashes? (hide-code-span-backslashes joined) [joined nil])
-        html          (md/md-to-html-string (dedent-indented-tables masked))
+        html          (md/md-to-html-string masked)
         html          (if backslashes? (restore-code-span-backslashes html tok) html)]
     (if-not fences?
       html
@@ -1938,13 +1948,15 @@
 (defn always-tabs
   "The tabs every start restores: the panel, and for each project its command
    dashboard when it has commands, else its Explorer, so every configured
-   project gets a window. Replay adds an Explorer to any window lacking one."
+   project gets a window, and a Sessions tab for each workspace config.edn
+   names. Replay adds an Explorer to any window lacking one."
   []
-  (into [{:path "/"}]
-        (for [{:keys [name dir]} projects]
-          (if (seq (commands-of name))
-            {:path (str "/commands/" (enc-path name))}
-            {:path (str "/view" (enc-path dir))}))))
+  (-> [{:path "/"}]
+      (into (for [{:keys [name dir]} projects]
+              (if (seq (commands-of name))
+                {:path (str "/commands/" (enc-path name))}
+                {:path (str "/view" (enc-path dir))})))
+      (into (for [n (config-workspaces)] {:path (str "/sessions/" n)}))))
 
 (defn merge-tabs
   "The remembered set merged with always-tabs: the dashboards are always restored, but the
@@ -3148,6 +3160,53 @@
     (str/starts-with? uri "/doc") (tablet-doc uri)
     :else (text 404 "not found\n")))
 
+(def tablet-off-file
+  "Present means the tablet server is turned off, and it stays off across
+   restarts until turned on again. Beside the reading list, so MDSERVE_TABLET
+   moves both."
+  (str tablet-file ".off"))
+
+(def tablet-server
+  "The running tablet server's stop function, or nil when it is not running."
+  (atom nil))
+
+(defn tablet-start!
+  "Start the tablet server unless it is running, disabled for this run by
+   MDSERVE_TABLET_PORT=0, or turned off. True when it is running."
+  []
+  (locking tablet-server
+    (when (and (pos? tablet-port) (nil? @tablet-server)
+               (not (.exists (io/file tablet-off-file))))
+      (reset! tablet-server (srv/run-server tablet-app {:ip tablet-bind :port tablet-port})))
+    (some? @tablet-server)))
+
+(defn tablet-off!
+  "Stop the tablet server at once, so the tablet cannot connect, and mark it
+   off so a restart does not bring it back. The reading list is kept."
+  []
+  (locking tablet-server
+    (io/make-parents tablet-off-file)
+    (spit tablet-off-file "Tablet server turned off. Delete this file, or press Tablet on in the panel, to turn it on.\n")
+    (when-let [stop @tablet-server]
+      (stop :timeout 100)
+      (reset! tablet-server nil))
+    (println "  tablet server OFF")
+    (text 200 "off\n")))
+
+(defn tablet-on!
+  "Clear the off mark and start the tablet server again."
+  []
+  (io/delete-file tablet-off-file true)
+  (if (tablet-start!)
+    (do (println "  tablet server ON:" tablet-base)
+        (text 200 "on\n"))
+    (text 409 "not started: MDSERVE_TABLET_PORT=0 for this run\n")))
+
+(defn tablet-status []
+  (text 200 (cond @tablet-server                     "on\n"
+                  (.exists (io/file tablet-off-file)) "off\n"
+                  :else                               "disabled for this run (MDSERVE_TABLET_PORT=0)\n")))
+
 (defn- project-lines
   "The panel's list of projects: name, workspace, folder, dashboard."
   []
@@ -3160,6 +3219,614 @@
                      (when workspace (str " — workspace " workspace))
                      " — [" dir "](" base "/view" (enc-path dir) ")"
                      " · [commands](" base "/commands/" name ")")))))
+
+;; --- /sessions (Claude Code sessions, one tab per workspace window) ---
+;; Design and data sources: MDSERVE_SESSIONS.md. Everything read here is Claude
+;; Code's own internal files, not a documented API, so every field is optional.
+
+(defn- sessions-config
+  "The :sessions map from config.edn over the defaults, plus the :projects and
+   :panel-workspace that place a session. Re-read on every refresh, so a change
+   needs no restart. Paths may start with ~."
+  []
+  (let [c (read-config)
+        s (merge {:claude-dirs       ["~/.claude"]
+                  :history-file      (str (.getParent (io/file config-file)) "/session-history.edn")
+                  :context-window    1000000
+                  :context-warn-pct  60
+                  :context-alarm-pct 80}
+                 (:sessions c))]
+    (assoc s
+           :claude-dirs     (mapv expand-home (:claude-dirs s))
+           :history-file    (expand-home (:history-file s))
+           :projects        (mapv #(-> %
+                                       (update :dir expand-home)
+                                       (update :session-dirs (partial mapv expand-home)))
+                                  (:projects c))
+           :panel-workspace (:panel-workspace c))))
+
+(defn- under-dir? [dir path]
+  (and dir path (or (= path dir) (str/starts-with? path (str dir "/")))))
+
+(defn session-workspace
+  "The workspace a session belongs to: the :workspace of the project whose
+   :dir or :session-dirs holds its cwd, else :panel-workspace."
+  [{:keys [projects panel-workspace]} cwd]
+  (or (some (fn [{:keys [dir workspace session-dirs]}]
+              (when (some #(under-dir? % cwd) (cons dir session-dirs)) workspace))
+            projects)
+      panel-workspace))
+
+(defn- ->date [x]
+  (try
+    (cond
+      (number? x) (java.util.Date. (long x))
+      (string? x) (java.util.Date/from (java.time.Instant/parse x)))
+    (catch Exception _ nil)))
+
+(defn- session-pid-alive?
+  "True when pid is running and, when procStart is known, is the same process
+   that wrote the session file: a pid can be reused after a session exits.
+   procStart is field 22 of /proc/<pid>/stat, counted after the ')' that ends
+   the command name, since the name itself can hold spaces."
+  [pid proc-start]
+  (when-let [stat (proc-read (str "/proc/" pid "/stat"))]
+    (or (nil? proc-start)
+        (let [after (subs stat (inc (str/last-index-of stat ")")))
+              fields (str/split (str/trim after) #"\s+")]
+          (= (str proc-start) (nth fields 19 nil))))))
+
+(defn- live-session-files
+  "Every running session's file, as maps with :claude-dir added. A file whose
+   process is gone is a dead session and is left out."
+  [claude-dirs]
+  (for [d     claude-dirs
+        f     (sort (.listFiles (io/file d "sessions")))
+        :when (str/ends-with? (.getName f) ".json")
+        :let  [m (try (json/parse-string (slurp f) true) (catch Exception _ nil))]
+        :when (and (:sessionId m) (:pid m) (session-pid-alive? (:pid m) (:procStart m)))]
+    (assoc m :claude-dir d)))
+
+(defn- transcript-file
+  "The session's transcript: projects/<cwd with every non-alphanumeric as ->/
+   <sessionId>.jsonl, else the same name in any project folder."
+  [claude-dir cwd sid]
+  (let [f (io/file claude-dir "projects" (str/replace (str cwd) #"[^A-Za-z0-9]" "-") (str sid ".jsonl"))]
+    (if (.isFile f)
+      f
+      (some #(let [g (io/file % (str sid ".jsonl"))] (when (.isFile g) g))
+            (.listFiles (io/file claude-dir "projects"))))))
+
+(defn- parse-line [s]
+  (try (json/parse-string s true) (catch Exception _ nil)))
+
+(defn- usage-tokens
+  "The context size an assistant line reports: all three input counts."
+  [m]
+  (let [u (get-in m [:message :usage])]
+    (when u
+      (+ (or (:input_tokens u) 0)
+         (or (:cache_read_input_tokens u) 0)
+         (or (:cache_creation_input_tokens u) 0)))))
+
+(defn scan-transcript
+  "Read a transcript from byte offset from up to its last complete line. Only
+   the new bytes are read, so after the first pass a refresh costs what was
+   added. Lines are picked out by a substring check before any JSON parse.
+   Returns the recaps and compactions found, the newest title, prompt, context
+   size and activity time (nil when that part held none), and :read-to."
+  [^java.io.File f from]
+  (let [len  (.length f)
+        from (if (> from len) 0 from)
+        hold (fn [v s] (if (>= (count v) 5) (conj (subvec v 1) s) (conj v s)))]
+    (with-open [in (java.io.FileInputStream. f)]
+      (.skip in from)
+      (let [rdr (java.io.BufferedReader. (java.io.InputStreamReader. in "UTF-8") (* 1024 1024))
+            avail (- len from)]
+        (loop [used 0 acc {:recaps [] :compactions [] :assistants [] :users []}]
+          (let [line (when (< used avail) (.readLine rdr))
+                n    (when line (inc (alength (.getBytes ^String line "UTF-8"))))]
+            (if (or (nil? line) (> (+ used n) avail))
+              (let [mains  (keep parse-line (rseq (:assistants acc)))
+                    main   (first (filter #(and (= "assistant" (:type %))
+                                                (not (:isSidechain %))
+                                                (pos? (or (usage-tokens %) 0)))
+                                          mains))
+                    user   (some->> (rseq (:users acc)) (keep parse-line)
+                                    (filter #(= "user" (:type %))) first)
+                    ai     (some-> (:ai-title acc) parse-line :aiTitle)
+                    custom (some-> (:custom-title acc) parse-line
+                                   ((fn [m] (or (:customTitle m) (:title m)))))
+                    ts     (->> [(:timestamp main) (:timestamp user)] (keep ->date) sort last)]
+                {:read-to      (+ from used)
+                 :recaps       (:recaps acc)
+                 :compactions  (:compactions acc)
+                 :ai-title     ai
+                 :custom-title custom
+                 :last-prompt  (some-> (:last-prompt acc) parse-line :lastPrompt)
+                 :context      (some-> main usage-tokens)
+                 :model        (get-in main [:message :model])
+                 :last-activity ts
+                 :cwd          (or (:cwd main) (:cwd user))})
+              (recur
+               (+ used n)
+               (cond
+                 (str/includes? line "\"subtype\":\"away_summary\"")
+                 (let [m (parse-line line)]
+                   (if (:content m)
+                     (update acc :recaps conj {:at (->date (:timestamp m)) :text (str (:content m))})
+                     acc))
+
+                 (str/includes? line "\"subtype\":\"compact_boundary\"")
+                 (let [m (parse-line line)]
+                   (update acc :compactions conj {:at         (->date (:timestamp m))
+                                                  :trigger    (get-in m [:compactMetadata :trigger])
+                                                  :pre-tokens (get-in m [:compactMetadata :preTokens])}))
+
+                 (str/includes? line "\"type\":\"ai-title\"")     (assoc acc :ai-title line)
+                 (str/includes? line "\"type\":\"custom-title\"") (assoc acc :custom-title line)
+                 (str/includes? line "\"type\":\"last-prompt\"")  (assoc acc :last-prompt line)
+                 (str/includes? line "\"type\":\"assistant\"")    (update acc :assistants hold line)
+                 (str/includes? line "\"type\":\"user\"")         (update acc :users hold line)
+                 :else acc)))))))))
+
+(defn- add-new
+  "old with the items of new whose :at it lacks. A restart rescans from the
+   last :read-to written, so the same recap can be read twice."
+  [old new]
+  (let [seen (set (map :at old))]
+    (into (vec old) (remove #(seen (:at %)) new))))
+
+(defn- merge-scan
+  "A history entry with one scan-transcript result folded in."
+  [entry {:keys [read-to recaps compactions ai-title custom-title last-prompt context last-activity cwd]}]
+  (cond-> (assoc entry
+                 :read-to read-to
+                 :trail (add-new (:trail entry) recaps)
+                 :compactions (add-new (:compactions entry) compactions))
+    ai-title      (assoc :ai-title ai-title)
+    custom-title  (assoc :custom-title custom-title)
+    last-prompt   (assoc :last-prompt last-prompt)
+    context       (assoc :context-last context :context-peak (max context (or (:context-peak entry) 0)))
+    last-activity (assoc :last-activity last-activity)
+    (and cwd (not (:cwd entry))) (assoc :cwd cwd)))
+
+(defn- load-history
+  "[history backfill? error]. No file yet means a first run, so backfill. A
+   file that will not read is an error, and nothing is written over it."
+  [file]
+  (let [f (io/file file)]
+    (if-not (.isFile f)
+      [{} true nil]
+      (try (let [h (edn/read-string (slurp f))]
+             (if (map? h) [h false nil] [{} false (str file ": not a map")]))
+           (catch Exception e [{} false (str file ": " (.getMessage e))])))))
+
+(defn- history-sig
+  "What a write is for: everything but the fields that move on every refresh.
+   The context counts only when it crosses a whole percent of the window."
+  [window entry]
+  (-> entry
+      (dissoc :read-to :last-seen :context-last :last-activity)
+      (assoc :context-pct (quot (* 100 (or (:context-last entry) 0)) window))))
+
+(defn- write-history!
+  "One entry per line, oldest session first. Written to a .new file and moved
+   over the old one, so a crash never leaves half a file."
+  [file h]
+  (let [f   (io/file file)
+        tmp (io/file (str file ".new"))]
+    (io/make-parents f)
+    (with-open [w (io/writer tmp)]
+      (.write w (str ";; mdserve session history: one entry per Claude Code session, keyed by\n"
+                     ";; session id. Written by mdserve (see ~/programs/MDSERVE_SESSIONS.md).\n"
+                     ";; Entries are never deleted.\n{"))
+      (doseq [[sid e] (sort-by (fn [[_ e]] (or (:started-at e) (:first-seen e))) h)]
+        (.write w (str "\n" (pr-str sid) "\n " (pr-str e))))
+      (.write w "}\n"))
+    (java.nio.file.Files/move (.toPath tmp) (.toPath f)
+                              (into-array java.nio.file.CopyOption
+                                          [java.nio.file.StandardCopyOption/REPLACE_EXISTING
+                                           java.nio.file.StandardCopyOption/ATOMIC_MOVE]))))
+
+(defn- live-entry
+  "A history entry updated from a running session's file."
+  [old s c now]
+  (assoc old
+         :name       (:name s)
+         :cwd        (:cwd s)
+         :workspace  (session-workspace c (:cwd s))
+         :identity   (:claude-dir s)
+         :pid        (:pid s)
+         :version    (:version s)
+         :started-at (->date (:startedAt s))
+         :first-seen (or (:first-seen old) now)
+         :last-seen  now
+         :ended-at   nil))
+
+(defn- scan-into
+  "entry with its transcript's new lines folded in; unchanged when the
+   transcript cannot be found."
+  [entry claude-dir sid]
+  (if-let [f (or (some-> (:transcript entry) io/file (#(when (.isFile ^java.io.File %) %)))
+                 (transcript-file claude-dir (:cwd entry) sid))]
+    (-> entry
+        (assoc :transcript (.getPath ^java.io.File f))
+        (merge-scan (scan-transcript f (or (:read-to entry) 0))))
+    entry))
+
+(defn- backfill
+  "Entries for every transcript on disk that the history lacks: the first run
+   starts with what Claude Code still keeps, ended sessions included."
+  [h c now]
+  (reduce (fn [h [d ^java.io.File f]]
+            (let [sid (str/replace (.getName f) #"\.jsonl$" "")]
+              (if (contains? h sid)
+                h
+                (let [e (merge-scan {:identity d :transcript (.getPath f) :first-seen now}
+                                    (scan-transcript f 0))]
+                  (assoc h sid (assoc e
+                                      :workspace (session-workspace c (:cwd e))
+                                      :ended-at  (or (:last-activity e) now)))))))
+          h
+          (for [d     (:claude-dirs c)
+                p     (.listFiles (io/file d "projects"))
+                :when (.isDirectory ^java.io.File p)
+                f     (.listFiles ^java.io.File p)
+                :when (str/ends-with? (.getName ^java.io.File f) ".jsonl")]
+            [d f])))
+
+(def sessions-state
+  "The latest refresh: the history map, the running sessions (their history
+   entries plus the live :status fields), and when it was taken."
+  (atom {:loaded? false :history {} :live [] :refreshed-at 0}))
+
+(def sessions-running (atom false))
+
+(defn- sessions-refresh!
+  "Read every running session, fold each transcript's new lines into the
+   history, mark sessions that have ended, backfill on a first run, and write
+   the history when something worth keeping changed."
+  []
+  (let [c      (sessions-config)
+        now    (java.util.Date.)
+        st     @sessions-state
+        [hist backfill? herr] (if (:loaded? st)
+                                [(:history st) false (:history-error st)]
+                                (load-history (:history-file c)))
+        live   (vec (live-session-files (:claude-dirs c)))
+        ids    (set (map :sessionId live))
+        h1     (reduce (fn [h s]
+                         (let [sid (:sessionId s)]
+                           (assoc h sid (-> (get h sid {})
+                                            (live-entry s c now)
+                                            (scan-into (:claude-dir s) sid)))))
+                       hist live)
+        h2     (reduce-kv (fn [h sid e]
+                            (if (and (:pid e) (nil? (:ended-at e)) (not (ids sid)))
+                              (assoc h sid (assoc e :ended-at now))
+                              h))
+                          h1 h1)
+        h3     (if backfill? (backfill h2 c now) h2)
+        sig    (fn [h] (update-vals h #(history-sig (:context-window c) %)))]
+    (when (and (nil? herr) (or backfill? (not= (sig hist) (sig h3))))
+      (write-history! (:history-file c) h3))
+    (swap! sessions-state assoc
+           :loaded? true
+           :history h3
+           :history-error herr
+           :error nil
+           :live (mapv #(merge (get h3 (:sessionId %)) (select-keys % [:status :statusUpdatedAt :sessionId]))
+                       live)
+           :refreshed-at (System/currentTimeMillis))))
+
+(defn- sessions-kick!
+  "Start a refresh in the background unless one is running or the last is
+   under 4s old. Requests never wait for it: the page shows the last refresh,
+   and its 5-second poll picks up the next."
+  []
+  (when (and (> (- (System/currentTimeMillis) (:refreshed-at @sessions-state)) 4000)
+             (compare-and-set! sessions-running false true))
+    (future
+      (try (sessions-refresh!)
+           (catch Exception e
+             (println "  sessions refresh failed:" (.getMessage e))
+             (swap! sessions-state assoc :error (.getMessage e)))
+           (finally (reset! sessions-running false))))))
+
+(defn- ss-attr [s]
+  (str/replace (escape-html s) "\"" "&quot;"))
+
+(defn- ss-ago
+  "A duration in ms as '12 min', '3 h' or '5 days'."
+  [ms]
+  (let [m (quot (max 0 ms) 60000)]
+    (cond
+      (< m 1)    "under a min"
+      (< m 60)   (str m " min")
+      (< m 1440) (str (quot m 60) " h")
+      :else      (let [d (quot m 1440)] (str d (if (= d 1) " day" " days"))))))
+
+(defn- ss-when [^java.util.Date d]
+  (when d
+    (.format (.atZone (.toInstant d) (java.time.ZoneId/systemDefault))
+             (DateTimeFormatter/ofPattern "d MMM HH:mm"))))
+
+(defn- recap-text [s]
+  (str/replace (str s) #"\s*\(disable recaps in /config\)\s*$" ""))
+
+(defn- first-sentence [s]
+  (let [s (str/trim (str/replace (str s) #"\s+" " "))]
+    (if-let [i (str/index-of s ". ")] (subs s 0 (inc i)) s)))
+
+(defn- clip [s n]
+  (let [s (str/trim (str/replace (str s) #"\s+" " "))]
+    (if (> (count s) n) (str (subs s 0 n) "…") s)))
+
+(def ^:private status-rank {"waiting" 0 "busy" 1 "idle" 2})
+
+(defn- session-row-html [e c now-ms]
+  (let [status (or (:status e) "unknown")
+        ctx    (:context-last e)
+        pct    (when ctx (Math/round (/ (* 100.0 ctx) (:context-window c))))
+        level  (cond (nil? pct) ""
+                     (>= pct (:context-alarm-pct c)) " alarm"
+                     (>= pct (:context-warn-pct c)) " warn"
+                     :else "")
+        recap  (some-> (:trail e) peek :text recap-text)
+        auto   (last (filter #(= "auto" (:trigger %)) (:compactions e)))
+        proj   (let [cwd (str (:cwd e))]
+                 (if (= cwd (System/getProperty "user.home")) "~" (.getName (io/file cwd))))
+        ident  (let [d (some-> (:identity e) io/file .getName)]
+                 (when (and d (not= d ".claude")) (str/replace d #"^\.claude-?" "")))]
+    (str "<details class=\"ss\" data-sid=\"" (ss-attr (:sessionId e)) "\"><summary>"
+         "<span class=\"ss-dot " (ss-attr status) "\" title=\"" (ss-attr status) "\"></span>"
+         "<span class=\"ss-proj\">" (escape-html proj)
+         (when ident (str "<span class=\"ss-tag\">" (escape-html ident) "</span>")) "</span>"
+         "<span class=\"ss-main\"><span class=\"ss-title\">"
+         (escape-html (or (:custom-title e) (:ai-title e) (:name e))) "</span>"
+         (when recap
+           (str "<span class=\"ss-now\" title=\"" (ss-attr recap) "\">" (escape-html (first-sentence recap)) "</span>"))
+         (when auto
+           (str "<span class=\"ss-compact\">auto-compacted " (escape-html (ss-when (:at auto)))
+                (when (:pre-tokens auto) (str " at " (quot (:pre-tokens auto) 1000) "k")) "</span>"))
+         "</span>"
+         "<span class=\"ss-ctx" level "\" title=\"" (if ctx (str ctx " tokens") "no reading yet") "\">"
+         (if pct (str "<span class=\"ss-bar\"><i style=\"width:" (min pct 100) "%\"></i></span>" pct "%") "–")
+         "</span>"
+         "<span class=\"ss-state\">" (escape-html status)
+         (when (:statusUpdatedAt e) (str " " (ss-ago (- now-ms (:statusUpdatedAt e))))) "</span>"
+         "<span class=\"ss-age\">" (if-let [d (:started-at e)] (str (ss-ago (- now-ms (.getTime ^java.util.Date d))) " old") "") "</span>"
+         "</summary><div class=\"ss-more\">"
+         (when (:last-prompt e)
+           (str "<p class=\"ss-last\"><b>Last request:</b> " (escape-html (clip (:last-prompt e) 400)) "</p>"))
+         (if (seq (:trail e))
+           ;; Newest first, numbered down from the highest: read back in time.
+           (str "<ol class=\"ss-trail\" reversed>"
+                (apply str (for [{:keys [at text]} (rseq (vec (:trail e)))]
+                             (str "<li><time>" (escape-html (ss-when at)) "</time> " (escape-html (recap-text text)) "</li>")))
+                "</ol>")
+           "<p class=\"ss-none\">No trail yet.</p>")
+         "<p class=\"ss-id\">" (escape-html (:name e)) " · " (escape-html (:sessionId e)) " · " (escape-html (:version e)) "</p>"
+         "</div></details>")))
+
+(defn sessions-rows-html
+  "The live part of a workspace's Sessions tab, re-fetched every 5s."
+  [n]
+  (sessions-kick!)
+  (let [c    (sessions-config)
+        st   @sessions-state
+        now  (System/currentTimeMillis)
+        rows (->> (:live st)
+                  (filter #(= n (:workspace %)))
+                  (sort-by (juxt #(status-rank (:status %) 3) #(- (or (:statusUpdatedAt %) 0)))))
+        cnt  (frequencies (map :status rows))]
+    (str "<div class=\"ss-head\" data-waiting=\"" (get cnt "waiting" 0) "\">"
+         (if (:loaded? st)
+           (str (get cnt "waiting" 0) " waiting · " (get cnt "busy" 0) " busy · " (get cnt "idle" 0) " idle")
+           "Reading the session files…")
+         (when-let [e (:history-error st)]
+           (str "<div class=\"ss-err\">History not written: " (escape-html e) "</div>"))
+         (when-let [e (:error st)]
+           (str "<div class=\"ss-err\">Refresh failed: " (escape-html e) "</div>"))
+         "</div>"
+         (when (and (:loaded? st) (empty? rows))
+           "<p class=\"ss-none\">No sessions running in this workspace.</p>")
+         (apply str (map #(session-row-html % c now) rows)))))
+
+(def sessions-style
+  (str/join "\n"
+            ["main.md:has(#ss){max-width:84rem}"
+             "#ss{max-width:none;font-size:.9em;line-height:1.45}"
+             ".ss-head{color:var(--fg-soft);margin:.2em 0 1em}"
+             ".ss-err{color:#d1242f}"
+             ".ss summary{display:grid;grid-template-columns:12px 8rem minmax(0,1fr) 8.5rem 9rem 6rem;gap:.9em;align-items:baseline;cursor:pointer;list-style:none;padding:.55em .2em;border-bottom:1px solid var(--line)}"
+             ".ss summary::-webkit-details-marker{display:none}"
+             ".ss-dot{width:10px;height:10px;border-radius:50%;background:#8b949e;align-self:start;margin-top:.45em}"
+             ".ss-dot.waiting{background:#e5534b}.ss-dot.busy{background:#d29922}"
+             ".ss-tag{font-size:.75em;margin-left:.5em;padding:0 .4em;border:1px solid var(--line);border-radius:4px;color:var(--fg-soft)}"
+             ".ss-main{display:flex;flex-direction:column;min-width:0}"
+             ".ss-title{font-weight:600}"
+             ".ss-now{color:var(--fg-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
+             ".ss-compact{color:#d1242f;font-size:.9em}"
+             ".ss-ctx{white-space:nowrap;font-variant-numeric:tabular-nums}"
+             ".ss-bar{display:inline-block;width:4.5rem;height:.55em;margin-right:.5em;border-radius:3px;background:var(--line);overflow:hidden;vertical-align:middle}"
+             ".ss-bar i{display:block;height:100%;background:#8b949e}"
+             ".ss-ctx.warn .ss-bar i{background:#d29922}.ss-ctx.warn{color:#b07d10}"
+             ".ss-ctx.alarm .ss-bar i{background:#e5534b}.ss-ctx.alarm{color:#d1242f;font-weight:600}"
+             ".ss-state,.ss-age{color:var(--fg-soft);white-space:nowrap}"
+             ".ss-more{padding:.4em 1em 1em calc(12px + 8rem + 1.8em)}"
+             ".ss-trail{margin:.4em 0;padding-left:1.2em}"
+             ".ss-trail li{margin:.25em 0}"
+             ".ss-trail time{color:var(--fg-soft);font-variant-numeric:tabular-nums;margin-right:.5em}"
+             ".ss-none,.ss-id{color:var(--fg-soft)}"
+             ".ss-id{font-size:.85em}"]))
+
+(defn- sessions-js [n]
+  (str "<script>(function(){"
+       "var box=document.getElementById('ss');"
+       "function title(){var h=box.querySelector('[data-waiting]');var w=h?+h.dataset.waiting:0;"
+       "document.title=(w?'('+w+' waiting) ':'')+'Sessions · ws " n "';}"
+       "function load(){if(document.visibilityState!=='visible')return;"
+       "fetch('/sessions/rows?ws=" n "').then(function(r){return r.text();}).then(function(h){"
+       "var open=[].map.call(box.querySelectorAll('details[open]'),function(d){return d.dataset.sid;});"
+       "box.innerHTML=h;"
+       "open.forEach(function(s){var d=box.querySelector('details[data-sid=\"'+s+'\"]');if(d)d.open=true;});"
+       "title();}).catch(function(){});}"
+       "title();setTimeout(load,1000);setInterval(load,5000);"
+       "document.addEventListener('visibilitychange',load);"
+       "})();</script>"))
+
+(defn sessions-page [n]
+  (sessions-kick!)
+  {:status 200
+   :headers {"Content-Type" "text/html; charset=utf-8"}
+   :body (layout (str "Sessions · ws " n)
+                 (str "<h1>Sessions · workspace " n "</h1>"
+                      "<div id=\"ss\">" (sessions-rows-html n) "</div>"
+                      (sessions-js n))
+                 (str "<style>" sessions-style "\n</style>")
+                 {:no-toolbar true})})
+
+(defn- entry-text
+  "Everything a search looks at in one history entry, lower-cased."
+  [sid e]
+  (str/lower-case
+   (str/join "\n" (concat [sid (:name e) (:ai-title e) (:custom-title e) (:last-prompt e) (:cwd e)]
+                          (map :text (:trail e))))))
+
+(defn- entry-time ^long [e]
+  (or (some-> (or (:last-activity e) (:last-seen e) (:started-at e) (:first-seen e))
+              (#(.getTime ^java.util.Date %)))
+      0))
+
+(defn sessions-find
+  "The history entries holding every word of q, case-insensitive, most recently
+   active first, at most 50. Each gets :sessionId. Reads the history as the last
+   refresh left it, or the file when no refresh has run yet."
+  [q]
+  (let [words (remove str/blank? (str/split (str/lower-case (str q)) #"\s+"))
+        st    @sessions-state
+        h     (if (:loaded? st) (:history st) (first (load-history (:history-file (sessions-config)))))]
+    (when (seq words)
+      (->> h
+           (keep (fn [[sid e]]
+                   (let [t (entry-text sid e)]
+                     (when (every? #(str/includes? t %) words) (assoc e :sessionId sid)))))
+           (sort-by #(- (entry-time %)))
+           (take 50)))))
+
+(defn- resume-command
+  "The shell line that reopens a session: claude --resume from its folder, with
+   CLAUDE_CONFIG_DIR when it belongs to an identity other than ~/.claude."
+  [{:keys [cwd identity sessionId]}]
+  (str "cd " cwd " && "
+       (when (and identity (not= ".claude" (.getName (io/file identity))))
+         (str "CLAUDE_CONFIG_DIR=" identity " "))
+       "claude --resume " sessionId))
+
+(defn- find-snippet
+  "Where the first word of q appears: the newest recap holding it, else the
+   last request, else nil."
+  [e q]
+  (let [w (first (remove str/blank? (str/split (str/lower-case (str q)) #"\s+")))]
+    (when w
+      (some #(when (str/includes? (str/lower-case (str %)) w) (recap-text %))
+            (concat (rseq (vec (map :text (:trail e)))) [(:last-prompt e)])))))
+
+(defn- find-dates [e]
+  (let [from (or (:started-at e) (:first-seen e))
+        to   (or (:last-activity e) (:last-seen e))]
+    (str (or (ss-when from) "?") " – " (or (ss-when to) "?")
+         (if (and (:pid e) (nil? (:ended-at e))) " · running" " · ended"))))
+
+(defn sessions-find-text
+  "sessions-find as plain text, for session-find in a shell."
+  [q]
+  (let [es (sessions-find q)]
+    (if (empty? es)
+      (str "No session in the history matches \"" q "\".\n")
+      (apply str
+             (for [e es]
+               (str (:name e) " · " (.getName (io/file (str (:cwd e)))) " · ws " (:workspace e) " · " (find-dates e) "\n"
+                    "  " (or (:custom-title e) (:ai-title e) "(no title)") "\n"
+                    (when-let [r (some-> (:trail e) peek :text recap-text first-sentence)] (str "  now on: " r "\n"))
+                    (when-let [s (find-snippet e q)] (str "  match:  " (clip s 240) "\n"))
+                    "  resume: " (resume-command e) "\n\n"))))))
+
+(defn sessions-find-html
+  "sessions-find as rows for the panel's search box: open one for its last
+   request, trail and resume command."
+  [q]
+  (let [es (sessions-find q)]
+    (if (empty? es)
+      (str "<p class=\"ss-none\">No session in the history matches \"" (escape-html q) "\".</p>")
+      (str "<p class=\"ss-head\">" (count es) (if (= 1 (count es)) " session" " sessions") ", most recent first.</p>"
+           (apply str
+                  (for [e es]
+                    (str "<details class=\"ss sf\"><summary>"
+                         "<span class=\"ss-proj\">" (escape-html (:name e)) "</span>"
+                         "<span class=\"ss-main\"><span class=\"ss-title\">"
+                         (escape-html (or (:custom-title e) (:ai-title e) "(no title)")) "</span>"
+                         (when-let [s (find-snippet e q)]
+                           (str "<span class=\"ss-now\" title=\"" (ss-attr s) "\">" (escape-html (clip s 160)) "</span>"))
+                         "</span>"
+                         "<span class=\"ss-state\">" (escape-html (find-dates e)) "</span>"
+                         "</summary><div class=\"ss-more\">"
+                         "<p class=\"ss-id\">" (escape-html (:cwd e)) " · workspace " (:workspace e) "</p>"
+                         (when (:last-prompt e)
+                           (str "<p class=\"ss-last\"><b>Last request:</b> " (escape-html (clip (:last-prompt e) 400)) "</p>"))
+                         (when (seq (:trail e))
+                           (str "<ol class=\"ss-trail\" reversed>"
+                                (apply str (for [{:keys [at text]} (rseq (vec (:trail e)))]
+                                             (str "<li><time>" (escape-html (ss-when at)) "</time> " (escape-html (recap-text text)) "</li>")))
+                                "</ol>"))
+                         "<p><b>Resume:</b> <code>" (escape-html (resume-command e)) "</code></p>"
+                         "</div></details>")))))))
+
+(def sessions-panel-section
+  "The panel's Sessions section: what the Sessions tabs are, and a search box
+   over the history (sessions-find-html, through /sessions/find)."
+  (str "<h2>Sessions</h2>"
+       "<p>Each window has a <b>Sessions</b> tab, second from the left: its Claude Code sessions, "
+       "which ones are waiting for you, what each is on now, and how full its context is. "
+       "The address is the window's workspace number: <code>/sessions/1</code>, <code>/sessions/2</code> and so on.</p>"
+       "<p>Every session is also kept in a history, ended ones too, with its title, last request and trail "
+       "of recaps. Search it here: every word must match, in any case.</p>"
+       "<form id=\"sf-form\" class=\"sf-form\"><input id=\"sf-q\" type=\"search\" placeholder=\"words to find\" autocomplete=\"off\"> "
+       "<button class=\"sf-btn\" type=\"submit\">Find</button></form>"
+       "<div id=\"sf-out\"></div>"
+       "<style>" sessions-style "\n"
+       ".sf-form{display:flex;gap:.5em;margin:.6em 0 1em}"
+       ".sf-form input{flex:1;max-width:28rem;font:inherit;font-size:15px;padding:5px 10px;border:1px solid var(--line);border-radius:8px;background:var(--pre-bg);color:var(--fg)}"
+       ".sf-btn{font:inherit;font-size:13px;cursor:pointer;border:1px solid var(--line);background:var(--pre-bg);color:var(--fg);border-radius:8px;padding:6px 12px}"
+       "#sf-out{max-width:none;font-size:.9em;line-height:1.45}"
+       ".ss.sf summary{grid-template-columns:8rem minmax(0,1fr) 16rem}"
+       ".ss.sf .ss-more{padding-left:calc(8rem + .9em)}"
+       "</style>"
+       "<script>(function(){var f=document.getElementById('sf-form'),q=document.getElementById('sf-q'),"
+       "out=document.getElementById('sf-out');"
+       "f.addEventListener('submit',function(e){e.preventDefault();if(!q.value.trim())return;"
+       "out.innerHTML='<p class=\"ss-head\">… Searching</p>';"
+       "fetch('/sessions/find?q='+encodeURIComponent(q.value)).then(function(r){return r.text();})"
+       ".then(function(h){out.innerHTML=h;}).catch(function(){out.innerHTML='<p class=\"ss-err\">⚠ Search failed</p>';});});"
+       "})();</script>"))
+(defn sessions-route
+  "The Sessions routes, or nil when uri is not one: /sessions/<n>, workspace n's
+   tab, /sessions/rows?ws=<n>, its 5-second poll, and /sessions/find?q=<words>
+   (&format=text for a shell), the history search."
+  [uri query-string]
+  (cond
+    (= uri "/sessions/rows")
+    (if-let [n (some-> (query-param query-string "ws") parse-long)]
+      {:status 200 :headers {"Content-Type" "text/html; charset=utf-8"} :body (sessions-rows-html n)}
+      (text 400 "ws=<n> needed\n"))
+    (= uri "/sessions/find")
+    (if (= "text" (query-param query-string "format"))
+      (text 200 (sessions-find-text (query-param query-string "q")))
+      {:status 200 :headers {"Content-Type" "text/html; charset=utf-8"} :body (sessions-find-html (query-param query-string "q"))})
+    (re-matches #"/sessions/\d+" uri) (sessions-page (parse-long (subs uri (count "/sessions/"))))))
+;; --- end /sessions section ---
 
 (def landing
   (layout "mdserve"
@@ -3182,6 +3849,24 @@
            (action-button "remember-tabs" "💾 Remember Tabs" "… Saving"
                           (str "Write the currently open tabs to " tabs-file)
                           (str base "/remember-tabs") "✓ Saved")
+           (when (pos? tablet-port)
+             (str (md/md-to-html-string
+                   (str "\n## Tablet\n\n"
+                        "The tablet reading list, on " tablet-base "/. **Off** stops that "
+                        "server at once, so the tablet cannot connect, and it stays off across "
+                        "restarts until turned **on**. The list is kept. From a shell: "
+                        "`./tablet.sh off`, `./tablet.sh on`, `./tablet.sh` (the state).\n"))
+                  "<p>Now: <b id=\"tablet-state\">…</b></p>"
+                  (action-button "tablet-btn" "⏻ Tablet off" "… Stopping" "Stop the tablet server now"
+                                 (str base "/tablet/off") "✓ Off")
+                  " "
+                  (action-button "tablet-btn" "Tablet on" "… Starting" "Start the tablet server again"
+                                 (str base "/tablet/on") "✓ On")
+                  "<script>function tabletState(){fetch('/tablet/status').then(function(r){return r.text();})"
+                  ".then(function(t){document.getElementById('tablet-state').textContent=t.trim();});}"
+                  "tabletState();document.addEventListener('click',function(e){"
+                  "if(e.target.classList.contains('tablet-btn'))setTimeout(tabletState,800);});</script>"))
+           sessions-panel-section
            (md/md-to-html-string
             (str "\n## Show a doc\n\n```\ncurl \"" base "/show/ABSOLUTE/PATH/file.md\"\n```\n\n"
                  "It opens in the window of the project the file lives in, or here. "
@@ -3204,6 +3889,10 @@
     (= uri "/") {:status 200 :headers {"Content-Type" "text/html; charset=utf-8"} :body landing}
     (= uri "/health") (text 200 "ok\n")
     (= uri "/version") (version-route)
+    (str/starts-with? uri "/sessions/") (or (sessions-route uri query-string) (text 404 "not found\n"))
+    (= uri "/tablet/status") (tablet-status)
+    (= uri "/tablet/off") (if (= request-method :post) (tablet-off!) (text 405 "POST only\n"))
+    (= uri "/tablet/on") (if (= request-method :post) (tablet-on!) (text 405 "POST only\n"))
     (= uri "/mem") (mem-route)
     (= uri "/favicon.ico") {:status 204}
     (= uri "/remember-tabs") (remember-tabs nil)
@@ -3223,8 +3912,9 @@
 ;; The tablet listener: a separate server with its own three routes, so nothing
 ;; added to `app` above can ever become reachable from the LAN by accident.
 (when (pos? tablet-port)
-  (srv/run-server tablet-app {:ip tablet-bind :port tablet-port})
-  (println (str "tablet reading list on " tablet-base "  (bind " tablet-bind ", list " tablet-file ")")))
+  (if (tablet-start!)
+    (println (str "tablet reading list on " tablet-base "  (bind " tablet-bind ", list " tablet-file ")"))
+    (println (str "tablet reading list OFF (" tablet-off-file " exists); turn it on with the panel's Tablet on button"))))
 
 (println (str "mdserve listening on " base))
 (println (str "  config:  " (if (.isFile (io/file config-file)) config-file (str config-file " (none — run bb install.bb)"))))

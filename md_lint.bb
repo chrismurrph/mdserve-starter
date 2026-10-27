@@ -1,6 +1,6 @@
 #!/usr/bin/env bb
 ;; md_lint — lint markdown for the seven failure modes that look fine in the
-;; source and only break when mdserve (markdown-clj 1.12.1) renders them, plus
+;; source and only break when mdserve (markdown-clj 1.12.10) renders them, plus
 ;; safe-edit helpers that refuse to write on an unexpected match count.
 ;;
 ;; Lint:  bb md_lint.bb FILE-OR-DIR ...        (exit 1 on hard errors, 0 else)
@@ -27,16 +27,19 @@
   #"\|(?:\s*:?-+:?\s*\|)+\s*")
 
 (defn- indented-table-line?
-  "A line indented 1-3 spaces whose content starts with |. Exactly the lines
-   markdown-clj refuses to see as a table: at column 0 it parses them fine, and
-   4+ spaces is an indented code block which must stay one."
+  "A line indented 1-3 spaces whose content starts with |: a table row inside a
+   list item. 4+ spaces is an indented code block, not a table."
   [line]
   (some? (re-matches #" {1,3}\|.*" line)))
 
 (defn dedent-indented-tables
-  "Markdown PRE-processor: shift GitHub tables that sit indented inside a list
-   item back to column 0 so markdown-clj recognises them. Mirrors mdserve.clj's
-   pre-processor exactly, so the lint sees the same text the parser will."
+  "Shift GitHub tables that sit indented inside a list item back to column 0,
+   for the table lint only, which looks for rows at column 0. Rendering no longer
+   needs it: markdown-clj 1.12.10 parses indented tables itself (1.12.1 turned
+   them into a paragraph of pipes, and this used to run before every render).
+   Scope is deliberately tight — a run of consecutive 1-3-space-indented
+   |-lines whose second line is a |---|---| separator, outside any ``` / ~~~
+   fence. 4-space-indented code blocks and pipe-ish prose are untouched."
   [body]
   (let [lines (str/split-lines body)
         n     (count lines)]
@@ -89,7 +92,7 @@
   "Scan markdown BODY (post-dedent, i.e. as the parser will see it; line
    numbers are unchanged by dedenting) for GitHub-table problems. Returns
    {:structural [..] :legibility [..]} — both empty for a healthy document.
-   Structural issues LOSE content in markdown-clj 1.12.1: :blank-split (a
+   Structural issues LOSE content in markdown-clj 1.12.10: :blank-split (a
    blank line inside a table detaches the trailing rows, which render as an
    EMPTY table), :no-separator (2+ pipe rows with no |---| line — also an
    empty table), :cell-count (a row WIDER than its header silently drops the
@@ -472,7 +475,7 @@
       (if (seq cur) (conj out cur) out))))
 
 (defn check-underscore-mangling
-  "Blocks holding two or more INTRAWORD underscores. markdown-clj 1.12.1 does
+  "Blocks holding two or more INTRAWORD underscores. markdown-clj 1.12.10 does
    not implement CommonMark's intraword-underscore rule: it pairs any two
    underscores as emphasis, so `foo_bar_baz` renders `foo<i>bar</i>baz` — the
    underscores VANISH into italics, taking no visible marker with them. The

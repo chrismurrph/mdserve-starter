@@ -19,8 +19,13 @@ The story behind it: [Workflow Ergonomics with AI](https://pangglow.com/files/bl
 - **Command buttons.** Each project's dashboard runs your scripts. A service
   shows a live dot and gets Launch, Stop and Restart. A one-shot gets Run, which
   opens its log as a tab and follows it until the run ends.
+- **A Sessions tab in every window.** Your Claude Code sessions, each in the
+  window of the project it was started in: which ones are waiting for you, what
+  each is on now, and how full its context is, so you can wrap one up before it
+  compacts. Open a row for its trail of recaps, newest first. Every session is
+  kept in a history, searched from the panel or with `./session-find.sh WORDS`.
 - **A tablet reading list** (optional). Push a doc to a tablet on your LAN for
-  reading on the couch.
+  reading on the couch. The panel, or `./tablet.sh off`, turns it off at once.
 
 ## Requirements
 

@@ -56,6 +56,9 @@ doc.
 | `/view/<abs-path>` | a file or folder, rendered, without opening anything |
 | `/commands/<project>/status` | JSON: each command button's state |
 | `/tab-show/<abs-path>` | put a doc on the tablet reading list, if one is configured |
+| `/sessions/<n>` | workspace n's Claude Code sessions; `/sessions/rows?ws=<n>` is its 5-second poll |
+| `/sessions/find?q=<words>` | search the session history (every word, any case); `&format=text` for a shell, as `session-find.sh` does |
+| `/tablet/off`, `/tablet/on` (POST), `/tablet/status` | stop or start the tablet server without a restart; off survives restarts (`tablet.edn.off`) |
 
 ## Part 2: changing it
 
@@ -131,10 +134,20 @@ the common ones; all are optional.
 | `:terminal`, `:terminal-run` | first known terminal | `{dir}` and `{cmd}` templates |
 | `:tablet-port` | 0 (off) | the LAN reading list (`MDSERVE_TABLET_PORT`) |
 | `:tablet-bind` | `0.0.0.0` | interface for it (`MDSERVE_TABLET_BIND`) |
+| `:sessions` | see below | the Sessions tabs |
 
 A command is `{:id :run}` plus optional `:label`, `:ports`, `:port-roles`,
 `:dir` and `:once`. Ids and project names are limited to letters, digits and
 `. _ -`.
+
+`:sessions` is optional, and read on every refresh: `{:claude-dirs ["~/.claude"]
+:history-file "<config dir>/session-history.edn" :context-window 1000000
+:context-warn-pct 60 :context-alarm-pct 80}` are the defaults. List more Claude
+Code config folders in `:claude-dirs` for a second identity. A project's
+`:session-dirs` adds folders whose sessions belong to its window. A session from
+no project's folder goes to `:panel-workspace`, so set that to see them. The
+history file keeps every session's trail, title and context peak, never deleted:
+Claude Code removes transcripts after `cleanupPeriodDays`.
 
 ### Rules for editing
 
