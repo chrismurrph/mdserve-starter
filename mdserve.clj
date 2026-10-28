@@ -3649,6 +3649,15 @@
 
 (def ^:private status-rank {"waiting" 0 "busy" 1 "idle" 2})
 
+(defn- resume-command
+  "The shell line that reopens a session: claude --resume from its folder, with
+   CLAUDE_CONFIG_DIR when it belongs to an identity other than ~/.claude."
+  [{:keys [cwd identity sessionId]}]
+  (str "cd " cwd " && "
+       (when (and identity (not= ".claude" (.getName (io/file identity))))
+         (str "CLAUDE_CONFIG_DIR=" identity " "))
+       "claude --resume " sessionId))
+
 (defn- session-row-html [e c now-ms]
   (let [status (or (:status e) "unknown")
         ctx    (:context-last e)
@@ -3692,20 +3701,38 @@
                 "</ol>")
            "<p class=\"ss-none\">No trail yet.</p>")
          "<p class=\"ss-id\">" (escape-html (:name e)) " · " (escape-html (:sessionId e)) " · " (escape-html (:version e)) "</p>"
+         (when (:ended-at e)
+           (str "<p><b>Resume:</b> <code>" (escape-html (resume-command e)) "</code></p>"))
          "</div></details>")))
 
+(defn- retired-sessions
+  "Workspace n's ended sessions from the history, most recently ended first, at
+   most 10. Each gets :sessionId, and :status \"ended\" with the time it ended,
+   so session-row-html shows 'ended 3 h'."
+  [history n]
+  (->> history
+       (keep (fn [[sid e]]
+               (when (and (:ended-at e) (= n (:workspace e)))
+                 (assoc e :sessionId sid :status "ended"
+                        :statusUpdatedAt (.getTime ^java.util.Date (:ended-at e))))))
+       (sort-by #(- (:statusUpdatedAt %)))
+       (take 10)))
+
 (defn sessions-rows-html
-  "The live part of a workspace's Sessions tab, re-fetched every 30s."
+  "The live part of a workspace's Sessions tab, re-fetched every 30s: the
+   running sessions, then the last 10 that ended."
   [n]
   (sessions-kick!)
-  (let [c    (sessions-config)
-        st   @sessions-state
-        now  (System/currentTimeMillis)
-        rows (->> (:live st)
-                  (filter #(= n (:workspace %)))
-                  (sort-by (juxt #(status-rank (:status %) 3) #(- (or (:statusUpdatedAt %) 0)))))
-        cnt  (frequencies (map :status rows))]
-    (str "<div class=\"ss-head\" data-waiting=\"" (get cnt "waiting" 0) "\">"
+  (let [c       (sessions-config)
+        st      @sessions-state
+        now     (System/currentTimeMillis)
+        rows    (->> (:live st)
+                     (filter #(= n (:workspace %)))
+                     (sort-by (juxt #(status-rank (:status %) 3) #(- (or (:statusUpdatedAt %) 0)))))
+        retired (retired-sessions (:history st) n)
+        cnt     (frequencies (map :status rows))]
+    (str "<h2>Active Sessions</h2>"
+         "<div class=\"ss-head\" data-waiting=\"" (get cnt "waiting" 0) "\">"
          (if (:loaded? st)
            (str (get cnt "waiting" 0) " waiting · " (get cnt "busy" 0) " busy · " (get cnt "idle" 0) " idle")
            "Reading the session files…")
@@ -3716,7 +3743,14 @@
          "</div>"
          (when (and (:loaded? st) (empty? rows))
            "<p class=\"ss-none\">No sessions running in this workspace.</p>")
-         (apply str (map #(session-row-html % c now) rows)))))
+         (apply str (map #(session-row-html % c now) rows))
+         (when (:loaded? st)
+           (str "<h2>Retired Sessions</h2>"
+                (if (seq retired)
+                  (str "<div class=\"ss-head\">The " (count retired) " most recently ended."
+                       (when (= 10 (count retired)) " Search the panel for older ones.") "</div>"
+                       (apply str (map #(session-row-html % c now) retired)))
+                  "<p class=\"ss-none\">No ended sessions in this workspace yet.</p>"))))))
 
 (def sessions-style
   (str/join "\n"
@@ -3728,6 +3762,8 @@
              ".ss summary::-webkit-details-marker{display:none}"
              ".ss-dot{width:10px;height:10px;border-radius:50%;background:#8b949e;align-self:start;margin-top:.45em}"
              ".ss-dot.waiting{background:#e5534b}.ss-dot.busy{background:#d29922}"
+             ".ss-dot.ended{background:none;border:1.5px solid #8b949e;box-sizing:border-box}"
+             "#ss h2{margin:1.4em 0 .3em}#ss h2:first-child{margin-top:.4em}"
              ".ss-tag{font-size:.75em;margin-left:.5em;padding:0 .4em;border:1px solid var(--line);border-radius:4px;color:var(--fg-soft)}"
              ".ss-main{display:flex;flex-direction:column;min-width:0}"
              ".ss-title{font-weight:600}"
@@ -3799,15 +3835,6 @@
                      (when (every? #(str/includes? t %) words) (assoc e :sessionId sid)))))
            (sort-by #(- (entry-time %)))
            (take 50)))))
-
-(defn- resume-command
-  "The shell line that reopens a session: claude --resume from its folder, with
-   CLAUDE_CONFIG_DIR when it belongs to an identity other than ~/.claude."
-  [{:keys [cwd identity sessionId]}]
-  (str "cd " cwd " && "
-       (when (and identity (not= ".claude" (.getName (io/file identity))))
-         (str "CLAUDE_CONFIG_DIR=" identity " "))
-       "claude --resume " sessionId))
 
 (defn- find-snippet
   "Where the first word of q appears: the newest recap holding it, else the

@@ -147,7 +147,9 @@ Code config folders in `:claude-dirs` for a second identity. A project's
 `:session-dirs` adds folders whose sessions belong to its window. A session from
 no project's folder goes to `:panel-workspace`, so set that to see them. The
 history file keeps every session's trail, title and context peak, never deleted:
-Claude Code removes transcripts after `cleanupPeriodDays`.
+Claude Code removes transcripts after `cleanupPeriodDays`. Each Sessions tab shows
+two sections: Active Sessions (running), then Retired Sessions, the window's 10
+most recently ended sessions from the history.
 
 ### Rules for editing
 
