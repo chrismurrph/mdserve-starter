@@ -142,14 +142,14 @@ A command is `{:id :run}` plus optional `:label`, `:ports`, `:port-roles`,
 
 `:sessions` is optional, and read on every refresh: `{:claude-dirs ["~/.claude"]
 :history-file "<config dir>/session-history.edn" :context-window 1000000
-:context-warn-pct 60 :context-alarm-pct 80}` are the defaults. List more Claude
+:context-warn-pct 60 :context-alarm-pct 80 :retired-count 25}` are the defaults. List more Claude
 Code config folders in `:claude-dirs` for a second identity. A project's
 `:session-dirs` adds folders whose sessions belong to its window. A session from
 no project's folder goes to `:panel-workspace`, so set that to see them. The
 history file keeps every session's trail, title and context peak, never deleted:
 Claude Code removes transcripts after `cleanupPeriodDays`. Each Sessions tab shows
-two sections: Active Sessions (running), then Retired Sessions, the window's 10
-most recently ended sessions from the history.
+two sections: Active Sessions (running), then Retired Sessions, the window's
+most recently ended sessions from the history (`:retired-count`, 25).
 
 ### Rules for editing
 

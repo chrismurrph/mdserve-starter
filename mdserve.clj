@@ -3300,7 +3300,8 @@
                   :history-file      (str (.getParent (io/file config-file)) "/session-history.edn")
                   :context-window    1000000
                   :context-warn-pct  60
-                  :context-alarm-pct 80}
+                  :context-alarm-pct 80
+                  :retired-count     25}
                  (:sessions c))]
     (assoc s
            :claude-dirs     (mapv expand-home (:claude-dirs s))
@@ -3707,20 +3708,20 @@
 
 (defn- retired-sessions
   "Workspace n's ended sessions from the history, most recently ended first, at
-   most 10. Each gets :sessionId, and :status \"ended\" with the time it ended,
+   most k. Each gets :sessionId, and :status \"ended\" with the time it ended,
    so session-row-html shows 'ended 3 h'."
-  [history n]
+  [history n k]
   (->> history
        (keep (fn [[sid e]]
                (when (and (:ended-at e) (= n (:workspace e)))
                  (assoc e :sessionId sid :status "ended"
                         :statusUpdatedAt (.getTime ^java.util.Date (:ended-at e))))))
        (sort-by #(- (:statusUpdatedAt %)))
-       (take 10)))
+       (take k)))
 
 (defn sessions-rows-html
   "The live part of a workspace's Sessions tab, re-fetched every 30s: the
-   running sessions, then the last 10 that ended."
+   running sessions, then the last :retired-count that ended."
   [n]
   (sessions-kick!)
   (let [c       (sessions-config)
@@ -3729,7 +3730,7 @@
         rows    (->> (:live st)
                      (filter #(= n (:workspace %)))
                      (sort-by (juxt #(status-rank (:status %) 3) #(- (or (:statusUpdatedAt %) 0)))))
-        retired (retired-sessions (:history st) n)
+        retired (retired-sessions (:history st) n (:retired-count c))
         cnt     (frequencies (map :status rows))]
     (str "<h2>Active Sessions</h2>"
          "<div class=\"ss-head\" data-waiting=\"" (get cnt "waiting" 0) "\">"
@@ -3748,7 +3749,7 @@
            (str "<h2>Retired Sessions</h2>"
                 (if (seq retired)
                   (str "<div class=\"ss-head\">The " (count retired) " most recently ended."
-                       (when (= 10 (count retired)) " Search the panel for older ones.") "</div>"
+                       (when (= (:retired-count c) (count retired)) " Search the panel for older ones.") "</div>"
                        (apply str (map #(session-row-html % c now) retired)))
                   "<p class=\"ss-none\">No ended sessions in this workspace yet.</p>"))))))
 

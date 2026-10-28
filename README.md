@@ -23,7 +23,7 @@ The story behind it: [Workflow Ergonomics with AI](https://pangglow.com/files/bl
   window of the project it was started in: which ones are waiting for you, what
   each is on now, and how full its context is, so you can wrap one up before it
   compacts. Open a row for its trail of recaps, newest first. Below them are the
-  10 sessions that ended last, each with the command that resumes it. Every
+  25 sessions that ended last, each with the command that resumes it. Every
   session is kept in a history, searched from the panel or with
   `./session-find.sh WORDS`.
 - **A tablet reading list** (optional). Push a doc to a tablet on your LAN for
