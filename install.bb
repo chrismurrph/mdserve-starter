@@ -135,9 +135,13 @@
   (println "Note: babashka (bb) is not on PATH, and mdserve.sh needs it there."))
 
 (def browser
-  (let [found (first (filter on-path? ["google-chrome" "google-chrome-stable" "chromium" "chromium-browser"]))]
+  (let [found (or (first (filter on-path? ["google-chrome" "google-chrome-stable" "chromium" "chromium-browser"]))
+                  ;; macOS: Chrome is an app bundle, not a command on PATH
+                  (first (filter #(.canExecute (io/file %))
+                                 (for [apps ["/Applications" (str home "/Applications")]]
+                                   (str apps "/Google Chrome.app/Contents/MacOS/Google Chrome")))))]
     (when-not found
-      (println "No Chrome or Chromium found on PATH. mdserve needs one of them."))
+      (println "No Chrome or Chromium found (on PATH, or in Applications on a Mac). mdserve needs one of them."))
     (ask "Browser command" (or found "google-chrome"))))
 
 (def port (or (ask-int "Port for mdserve" (free-port 7000)) 7000))
@@ -195,5 +199,6 @@
   (when (or use-examples? (seq own-projects))
     (println)
     (println "Every window opens on whichever workspace is current: nothing on Linux")
-    (println "lets a program put a window on a given workspace. Move each project's")
-    (println "window to its workspace after a start (on GNOME: Super+Shift+Page Up/Down).")))
+    (println "or macOS lets a program put a window on a given workspace. Move each")
+    (println "project's window to its workspace after a start (on GNOME:")
+    (println "Super+Shift+Page Up/Down; on a Mac, drag it to a Space in Mission Control).")))

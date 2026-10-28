@@ -122,12 +122,27 @@
 ;; (useful for restarts: avoids piling up duplicate tabs; refresh existing ones).
 (def no-open? (some? (System/getenv "MDSERVE_NO_OPEN")))
 
+(def mac?
+  "True on macOS, where Chrome, the terminal, memory figures and detached commands
+   each need their own way."
+  (str/starts-with? (str (System/getProperty "os.name")) "Mac"))
+
+(def mac-chrome "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+
 (def browser
   "The browser command, flags allowed. Must be Chrome or Chromium: tab placement
-   and Remember Tabs use its DevTools port."
-  (or (System/getenv "MDSERVE_BROWSER") (:browser config) "google-chrome"))
+   and Remember Tabs use its DevTools port. On macOS the default is the program
+   inside Google Chrome.app."
+  (or (System/getenv "MDSERVE_BROWSER") (:browser config) (if mac? mac-chrome "google-chrome")))
 
-(def browser-cmd (str/split browser #"\s+"))
+(def browser-cmd
+  "browser as argv. A vector from config.edn is used as it is. A string is split on
+   spaces, unless the whole string is a program on disk: macOS paths such as
+   mac-chrome hold spaces."
+  (cond
+    (sequential? browser)           (vec browser)
+    (.canExecute (io/file browser)) [browser]
+    :else                           (str/split browser #"\s+")))
 
 (def profile (or (System/getenv "MDSERVE_PROFILE")
                  (some-> (:profile config) expand-home)
@@ -461,6 +476,28 @@
   (or (some-> (re-find #"(?m)^#\s+(.+?)\s*$" body) second not-empty)
       (.getName (io/file path))))
 
+(defn- mac-mem-stats
+  "mem-stats on macOS, which has no /proc: total from sysctl hw.memsize, available
+   from vm_stat as free + inactive + speculative pages (memory a new process could
+   claim), swap from sysctl vm.swapusage. A figure that cannot be read is nil."
+  []
+  (try
+    (let [vm    (:out (p/sh "vm_stat"))
+          page  (some-> (re-find #"page size of (\d+) bytes" vm) second parse-long)
+          pages (fn [k] (or (some-> (re-find (re-pattern (str "Pages " k ":\\s+(\\d+)")) vm) second parse-long) 0))
+          total (some-> (:out (p/sh "sysctl" "-n" "hw.memsize")) str/trim parse-long)
+          avail (when page (* page (+ (pages "free") (pages "inactive") (pages "speculative"))))
+          swap  (:out (p/sh "sysctl" "-n" "vm.swapusage"))
+          mib   (fn [k] (some-> (re-find (re-pattern (str k " = ([\\d.]+)M")) swap) second parse-double (* 1048576) long))]
+      {:total total
+       :available avail
+       :used (when (and total avail) (- total avail))
+       :used-pct (when (and total avail (pos? total))
+                   (* 100.0 (/ (double (- total avail)) total)))
+       :swap-total (mib "total")
+       :swap-used (mib "used")})
+    (catch Exception _ {})))
+
 (defn mem-stats
   "Machine memory from /proc/meminfo, in bytes plus a used percentage.
 
@@ -472,25 +509,29 @@
 
    Read via Files/readAllBytes rather than slurp: /proc files report a size of
    0, and every reader-based path in babashka — slurp, slurp+io/reader,
-   line-seq — dies on that with 'IOException: Invalid argument'."
+   line-seq — dies on that with 'IOException: Invalid argument'.
+
+   macOS has no /proc: mac-mem-stats gives the same keys there."
   []
-  (let [kv (into {} (for [l (str/split-lines
-                             (String. (java.nio.file.Files/readAllBytes
-                                       (.toPath (io/file "/proc/meminfo")))))
-                          :let [[_ k v] (re-matches #"([^:]+):\s+(\d+) kB" l)]
-                          :when k]
-                      [k (* 1024 (parse-long v))]))
-        total (kv "MemTotal")
-        avail (kv "MemAvailable")
-        sw-t  (kv "SwapTotal")
-        sw-f  (kv "SwapFree")]
-    {:total total
-     :available avail
-     :used (when (and total avail) (- total avail))
-     :used-pct (when (and total avail (pos? total))
-                 (* 100.0 (/ (double (- total avail)) total)))
-     :swap-total sw-t
-     :swap-used (when (and sw-t sw-f) (- sw-t sw-f))}))
+  (if (.exists (io/file "/proc/meminfo"))
+    (let [kv (into {} (for [l (str/split-lines
+                               (String. (java.nio.file.Files/readAllBytes
+                                         (.toPath (io/file "/proc/meminfo")))))
+                            :let [[_ k v] (re-matches #"([^:]+):\s+(\d+) kB" l)]
+                            :when k]
+                        [k (* 1024 (parse-long v))]))
+          total (kv "MemTotal")
+          avail (kv "MemAvailable")
+          sw-t  (kv "SwapTotal")
+          sw-f  (kv "SwapFree")]
+      {:total total
+       :available avail
+       :used (when (and total avail) (- total avail))
+       :used-pct (when (and total avail (pos? total))
+                   (* 100.0 (/ (double (- total avail)) total)))
+       :swap-total sw-t
+       :swap-used (when (and sw-t sw-f) (- sw-t sw-f))})
+    (mac-mem-stats)))
 
 (defn- proc-read
   "Contents of a /proc file, or nil. Files/readAllBytes rather than slurp for
@@ -2363,19 +2404,33 @@
 (def terminal-templates
   "Known terminals, as [shell-template run-template], tried in order when
    config.edn names none. {dir} is replaced by the directory; the single token
-   {cmd} by the command's words."
-  [["ptyxis"         ["ptyxis --new-window --working-directory={dir}"
-                      "ptyxis --new-window --working-directory={dir} -- {cmd}"]]
-   ["gnome-terminal" ["gnome-terminal --working-directory={dir}"
-                      "gnome-terminal --working-directory={dir} -- {cmd}"]]
-   ["konsole"        ["konsole --workdir {dir}"
-                      "konsole --workdir {dir} -e {cmd}"]]
-   ["kitty"          ["kitty --directory {dir}"
-                      "kitty --directory {dir} {cmd}"]]
-   ["alacritty"      ["alacritty --working-directory {dir}"
-                      "alacritty --working-directory {dir} -e {cmd}"]]
-   ["xfce4-terminal" ["xfce4-terminal --working-directory={dir}"
-                      "xfce4-terminal --working-directory={dir} -x {cmd}"]]])
+   {cmd} by the command's words. On macOS, Terminal.app comes last: `open` for a
+   plain terminal, and AppleScript to run a command in one (its words quoted one
+   by one). The first time, macOS asks whether bb may control Terminal."
+  (into [["ptyxis"         ["ptyxis --new-window --working-directory={dir}"
+                            "ptyxis --new-window --working-directory={dir} -- {cmd}"]]
+         ["gnome-terminal" ["gnome-terminal --working-directory={dir}"
+                            "gnome-terminal --working-directory={dir} -- {cmd}"]]
+         ["konsole"        ["konsole --workdir {dir}"
+                            "konsole --workdir {dir} -e {cmd}"]]
+         ["kitty"          ["kitty --directory {dir}"
+                            "kitty --directory {dir} {cmd}"]]
+         ["alacritty"      ["alacritty --working-directory {dir}"
+                            "alacritty --working-directory {dir} -e {cmd}"]]
+         ["xfce4-terminal" ["xfce4-terminal --working-directory={dir}"
+                            "xfce4-terminal --working-directory={dir} -x {cmd}"]]]
+        (when mac?
+          [["osascript" ["open -a Terminal {dir}"
+                         ["osascript"
+                          "-e" "on run argv"
+                          "-e" "set s to \"cd \" & quoted form of (item 1 of argv) & \" && exec\""
+                          "-e" "repeat with w in (rest of argv)"
+                          "-e" "set s to s & \" \" & quoted form of (w as text)"
+                          "-e" "end repeat"
+                          "-e" "tell application \"Terminal\" to do script s"
+                          "-e" "tell application \"Terminal\" to activate"
+                          "-e" "end run"
+                          "{dir}" "{cmd}"]]]])))
 
 (defn- on-path? [exe]
   (some #(.canExecute (io/file % exe))
@@ -2390,15 +2445,16 @@
      (or (System/getenv "MDSERVE_TERMINAL_RUN") (:terminal-run config) (second detected))]))
 
 (defn- fill-template
-  "argv from a space-separated template: {dir} replaced inside any token, and
-   the token {cmd} expanded to cmd-argv."
+  "argv from a template: a space-separated string, or a vector of tokens when a
+   token must hold spaces (macOS's AppleScript lines). {dir} is replaced inside
+   any token, and the token {cmd} expanded to cmd-argv."
   [tmpl dir cmd-argv]
   (into []
         (mapcat (fn [tok]
                   (if (= tok "{cmd}")
                     cmd-argv
                     [(str/replace tok "{dir}" dir)])))
-        (str/split (str/trim tmpl) #"\s+")))
+        (if (string? tmpl) (str/split (str/trim tmpl) #"\s+") tmpl)))
 
 (defn- terminal-argv
   "argv to open a terminal in dir, or nil when no terminal is known."
@@ -2693,9 +2749,17 @@
   [s]
   (str "'" (str/replace (str s) "'" "'\\''") "'"))
 
+(def setsid-argv
+  "Prefix that runs a command in a new session of its own. Linux has setsid(1);
+   macOS does not, so there perl calls setsid(2) and execs the command, which
+   keeps the pid."
+  (if (on-path? "setsid")
+    ["setsid"]
+    ["perl" "-MPOSIX=setsid" "-e" "setsid() or die $!; exec @ARGV or die $!"]))
+
 (defn- cmd-start!
-  "Run cmd DETACHED: setsid gives it its own session, so it survives an mdserve
-   restart and Stop can signal its whole process group. The recorded pid is the
+  "Run cmd DETACHED: setsid gives it its own session (setsid-argv: perl on
+   macOS), so it survives an mdserve restart and Stop can signal its whole process group. The recorded pid is the
    wrapping shell's own ($$), which for a service then execs the command, so the
    pid IS the service. Output goes to the log; a one-shot also records its exit
    code. The command text travels in an environment variable, never spliced
@@ -2706,15 +2770,16 @@
     (.mkdirs (io/file state-dir group))
     (.delete (cmd-file group id "exit"))
     (spit log (str "$ " run "\n  (in " wd ", started " (java.time.LocalDateTime/now) ")\n\n"))
-    (p/process ["setsid" "bash" "-c"
-                (str "echo $$ > " (shq (cmd-file group id "pid"))
-                     "; export PATH=" (shq cmd-path) ":\"$PATH\""
-                     "; cd " (shq wd) " || exit 1; "
-                     (if (one-shot? cmd)
-                       (str "bash -c \"$MDSERVE_RUN\" >> " (shq log) " 2>&1; code=$?"
-                            "; echo $code > " (shq (cmd-file group id "exit"))
-                            "; echo \"--- exit $code\" >> " (shq log))
-                       (str "exec bash -c \"$MDSERVE_RUN\" >> " (shq log) " 2>&1")))]
+    (p/process (into setsid-argv
+                     ["bash" "-c"
+                      (str "echo $$ > " (shq (cmd-file group id "pid"))
+                           "; export PATH=" (shq cmd-path) ":\"$PATH\""
+                           "; cd " (shq wd) " || exit 1; "
+                           (if (one-shot? cmd)
+                             (str "bash -c \"$MDSERVE_RUN\" >> " (shq log) " 2>&1; code=$?"
+                                  "; echo $code > " (shq (cmd-file group id "exit"))
+                                  "; echo \"--- exit $code\" >> " (shq log))
+                             (str "exec bash -c \"$MDSERVE_RUN\" >> " (shq log) " 2>&1")))])
                {:extra-env {"MDSERVE_RUN" run}
                 :out (io/file "/dev/null") :err (io/file "/dev/null")})
     nil))
@@ -2725,7 +2790,8 @@
    from a terminal is stopped too. Removes the pidfile so a service reads down."
   [group {:keys [id ports]}]
   (when-let [pid (cmd-pid group id)]
-    (try @(p/process ["kill" "-TERM" "--" (str "-" pid)]) (catch Exception _ nil))
+    ;; bash's own kill: macOS's /bin/kill cannot be relied on for "-- -pgid"
+    (try @(p/process ["bash" "-c" (str "kill -TERM -- -" pid)]) (catch Exception _ nil))
     (wait-for #(not (pid-alive? pid)) 5000))
   (when (seq ports)
     (wait-for #(not (some port-up? ports)) 3000)
@@ -3265,16 +3331,24 @@
     (catch Exception _ nil)))
 
 (defn- session-pid-alive?
-  "True when pid is running and, when procStart is known, is the same process
-   that wrote the session file: a pid can be reused after a session exits.
-   procStart is field 22 of /proc/<pid>/stat, counted after the ')' that ends
-   the command name, since the name itself can hold spaces."
-  [pid proc-start]
-  (when-let [stat (proc-read (str "/proc/" pid "/stat"))]
-    (or (nil? proc-start)
-        (let [after (subs stat (inc (str/last-index-of stat ")")))
-              fields (str/split (str/trim after) #"\s+")]
-          (= (str proc-start) (nth fields 19 nil))))))
+  "True when pid is running and is the same process that wrote the session file:
+   a pid can be reused after a session exits. On Linux, procStart is field 22 of
+   /proc/<pid>/stat, counted after the ')' that ends the command name, since the
+   name itself can hold spaces. Where there is no /proc (macOS) the check is that
+   the process started no later than the session (startedAt, ms, with a minute's
+   slack): a reused pid belongs to a process that started after it."
+  [pid proc-start started-at]
+  (if (.exists (io/file "/proc/self/stat"))
+    (when-let [stat (proc-read (str "/proc/" pid "/stat"))]
+      (or (nil? proc-start)
+          (let [after (subs stat (inc (str/last-index-of stat ")")))
+                fields (str/split (str/trim after) #"\s+")]
+            (= (str proc-start) (nth fields 19 nil)))))
+    (when-let [ph (.orElse (java.lang.ProcessHandle/of (long pid)) nil)]
+      (and (.isAlive ph)
+           (let [start (.orElse (.startInstant (.info ph)) nil)]
+             (or (nil? start) (not (number? started-at))
+                 (<= (.toEpochMilli start) (+ (long started-at) 60000))))))))
 
 (defn- live-session-files
   "Every running session's file, as maps with :claude-dir added. A file whose
@@ -3284,7 +3358,7 @@
         f     (sort (.listFiles (io/file d "sessions")))
         :when (str/ends-with? (.getName f) ".json")
         :let  [m (try (json/parse-string (slurp f) true) (catch Exception _ nil))]
-        :when (and (:sessionId m) (:pid m) (session-pid-alive? (:pid m) (:procStart m)))]
+        :when (and (:sessionId m) (:pid m) (session-pid-alive? (:pid m) (:procStart m) (:startedAt m)))]
     (assoc m :claude-dir d)))
 
 (defn- transcript-file
@@ -3456,8 +3530,9 @@
     entry))
 
 (defn- backfill
-  "Entries for every transcript on disk that the history lacks: the first run
-   starts with what Claude Code still keeps, ended sessions included."
+  "Entries for every transcript on disk that the history lacks, ended sessions
+   included. Run on every refresh, so a session that started and ended between
+   two refreshes is still recorded; the first run picks up all Claude Code keeps."
   [h c now]
   (reduce (fn [h [d ^java.io.File f]]
             (let [sid (str/replace (.getName f) #"\.jsonl$" "")]
@@ -3485,7 +3560,7 @@
 
 (defn- sessions-refresh!
   "Read every running session, fold each transcript's new lines into the
-   history, mark sessions that have ended, backfill on a first run, and write
+   history, mark sessions that have ended, add any transcript not yet seen, and write
    the history when something worth keeping changed."
   []
   (let [c      (sessions-config)
@@ -3507,7 +3582,7 @@
                               (assoc h sid (assoc e :ended-at now))
                               h))
                           h1 h1)
-        h3     (if backfill? (backfill h2 c now) h2)
+        h3     (backfill h2 c now)
         sig    (fn [h] (update-vals h #(history-sig (:context-window c) %)))]
     (when (and (nil? herr) (or backfill? (not= (sig hist) (sig h3))))
       (write-history! (:history-file c) h3))
@@ -3523,7 +3598,7 @@
 (defn- sessions-kick!
   "Start a refresh in the background unless one is running or the last is
    under 4s old. Requests never wait for it: the page shows the last refresh,
-   and its 5-second poll picks up the next."
+   and its 30-second poll picks up the next."
   []
   (when (and (> (- (System/currentTimeMillis) (:refreshed-at @sessions-state)) 4000)
              (compare-and-set! sessions-running false true))
@@ -3533,6 +3608,15 @@
              (println "  sessions refresh failed:" (.getMessage e))
              (swap! sessions-state assoc :error (.getMessage e)))
            (finally (reset! sessions-running false))))))
+
+(def sessions-timer
+  "Refreshes every 3 minutes whether or not a Sessions tab is looking, so the
+   history keeps up on its own. The first runs at startup."
+  (future
+    (loop []
+      (sessions-kick!)
+      (Thread/sleep (* 3 60 1000))
+      (recur))))
 
 (defn- ss-attr [s]
   (str/replace (escape-html s) "\"" "&quot;"))
@@ -3611,7 +3695,7 @@
          "</div></details>")))
 
 (defn sessions-rows-html
-  "The live part of a workspace's Sessions tab, re-fetched every 5s."
+  "The live part of a workspace's Sessions tab, re-fetched every 30s."
   [n]
   (sessions-kick!)
   (let [c    (sessions-config)
@@ -3673,7 +3757,7 @@
        "box.innerHTML=h;"
        "open.forEach(function(s){var d=box.querySelector('details[data-sid=\"'+s+'\"]');if(d)d.open=true;});"
        "title();}).catch(function(){});}"
-       "title();setTimeout(load,1000);setInterval(load,5000);"
+       "title();setTimeout(load,1000);setInterval(load,30000);"
        "document.addEventListener('visibilitychange',load);"
        "})();</script>"))
 
@@ -3813,7 +3897,7 @@
        "})();</script>"))
 (defn sessions-route
   "The Sessions routes, or nil when uri is not one: /sessions/<n>, workspace n's
-   tab, /sessions/rows?ws=<n>, its 5-second poll, and /sessions/find?q=<words>
+   tab, /sessions/rows?ws=<n>, its 30-second poll, and /sessions/find?q=<words>
    (&format=text for a shell), the history search."
   [uri query-string]
   (cond
@@ -3883,8 +3967,10 @@
           {:no-toolbar true}))
 
 (defn app [{:keys [uri request-method query-string]}]
-  (println (str (.format (LocalTime/now) (DateTimeFormatter/ofPattern "HH:mm:ss"))
-                "  " (name request-method) " " uri))
+  ;; The Sessions tabs poll every 30s; those requests are left out of the log.
+  (when-not (= uri "/sessions/rows")
+    (println (str (.format (LocalTime/now) (DateTimeFormatter/ofPattern "HH:mm:ss"))
+                  "  " (name request-method) " " uri)))
   (cond
     (= uri "/") {:status 200 :headers {"Content-Type" "text/html; charset=utf-8"} :body landing}
     (= uri "/health") (text 200 "ok\n")

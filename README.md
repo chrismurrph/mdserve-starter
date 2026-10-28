@@ -29,14 +29,13 @@ The story behind it: [Workflow Ergonomics with AI](https://pangglow.com/files/bl
 
 ## Requirements
 
-- Linux with a desktop. It is untested on macOS; there, the browser path and
-  the terminal command would be the parts to change.
+- Linux with a desktop, or macOS. The macOS support is new and has not yet been
+  tested on a real Mac.
 - [babashka](https://babashka.org) (`bb`). `install.sh` installs it for you if
   it's missing (into `~/.local/bin`, no sudo).
 - Google Chrome or Chromium. mdserve runs it with its own profile, so your
   normal browser is untouched.
 - `lsof`, so that ■ Stop can also end a server that was started from a terminal.
-- `python3`, for the example projects' web server only.
 
 ## Install
 
@@ -56,9 +55,10 @@ Then start it from the workspace you want the panel on:
 ./mdserve.sh
 ```
 
-The windows open. Move each project's window to its workspace. No Linux desktop
-lets a program choose a window's workspace, so this is done by hand after each
-start (on GNOME: Super+Shift+Page Up/Down).
+The windows open. Move each project's window to its workspace. Neither Linux nor
+macOS lets a program choose a window's workspace, so this is done by hand after
+each start (on GNOME: Super+Shift+Page Up/Down; on a Mac, drag the window to a
+Space in Mission Control).
 
 ## Show a doc
 

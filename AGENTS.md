@@ -56,7 +56,7 @@ doc.
 | `/view/<abs-path>` | a file or folder, rendered, without opening anything |
 | `/commands/<project>/status` | JSON: each command button's state |
 | `/tab-show/<abs-path>` | put a doc on the tablet reading list, if one is configured |
-| `/sessions/<n>` | workspace n's Claude Code sessions; `/sessions/rows?ws=<n>` is its 5-second poll |
+| `/sessions/<n>` | workspace n's Claude Code sessions; `/sessions/rows?ws=<n>` is its 30-second poll (not logged); mdserve also refreshes every 3 minutes on its own |
 | `/sessions/find?q=<words>` | search the session history (every word, any case); `&format=text` for a shell, as `session-find.sh` does |
 | `/tablet/off`, `/tablet/on` (POST), `/tablet/status` | stop or start the tablet server without a restart; off survives restarts (`tablet.edn.off`) |
 
@@ -108,7 +108,7 @@ Everything is in **`mdserve.clj`**, one babashka script, top to bottom:
   in, so mdserve works it out from what each tab belongs to (`tab-project`):
   a project's dashboard, or a file under its folder.
 - **No program can put a window on a given workspace** on GNOME or KDE under
-  Wayland. The `:workspace` numbers in the config are labels the person
+  Wayland, or in macOS Spaces. The `:workspace` numbers in the config are labels the person
   maintains by moving windows themselves; they decide where `?ws=<n>` sends a
   doc, nothing more. Each project window gets `--class=mdserve-<name>`, so a
   window-rule extension can place it, where one exists.
@@ -121,7 +121,7 @@ the common ones; all are optional.
 | Key | Default | What |
 |---|---|---|
 | `:port` | 7000 | where mdserve listens (`MDSERVE_PORT`) |
-| `:browser` | `google-chrome` | browser command, flags allowed (`MDSERVE_BROWSER`) |
+| `:browser` | `google-chrome`; on macOS, the program inside `Google Chrome.app` | browser command, flags allowed (`MDSERVE_BROWSER`); a path with spaces, or a vector of words |
 | `:profile` | `~/.local/share/mdserve-starter/browser` | the browser's own profile (`MDSERVE_PROFILE`) |
 | `:devtools-port` | 9222 | `0` turns placement and Remember Tabs off (`MDSERVE_DEVTOOLS_PORT`) |
 | `:projects` | none | `[{:name :dir :workspace :commands} ...]`; one window each |

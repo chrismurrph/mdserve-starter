@@ -1,7 +1,21 @@
 #!/usr/bin/env bash
 # A stand-in dev server for the example projects: serves the current directory
 # on the port given (default 8701). Long-running, so it is a SERVICE.
+# Runs on Babashka, which mdserve already needs, so nothing else is required
+# (python3 on a fresh Mac offers to install Apple's developer tools).
 set -euo pipefail
 port="${1:-8701}"
+bb=$(command -v bb || echo ~/.local/bin/bb)
 echo "serving $(pwd) on http://localhost:$port"
-exec python3 -u -m http.server "$port" --bind 127.0.0.1
+exec "$bb" -e '
+(require (quote [org.httpkit.server :as s]) (quote [clojure.java.io :as io]))
+(let [root (.getCanonicalPath (io/file "."))
+      port (parse-long (first *command-line-args*))]
+  (s/run-server
+   (fn [{:keys [uri]}]
+     (let [f (io/file root (subs uri 1))]
+       (if (and (.isFile f) (.startsWith (.getCanonicalPath f) (str root "/")))
+         {:status 200 :body f}
+         {:status 200 :headers {"Content-Type" "text/plain"} :body (str "serving " root "\n")})))
+   {:ip "127.0.0.1" :port port})
+  @(promise))' "$port"
